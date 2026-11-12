@@ -1,0 +1,79 @@
+{
+  "dataset": "metro-vibration",
+  "description": "轨道交通车辆转向架振动采样（三轴加速度，5s 间隔）",
+  "generated_at": "2026-11-11T00:00:00Z",
+  "partitions": [
+    {
+      "partition_id": "P0001",
+      "vehicle_id": "T101",
+      "start_ts": "2026-10-01T00:00:00Z",
+      "end_ts": "2026-10-01T01:00:00Z",
+      "expires_at": "2026-11-01T00:00:00Z",
+      "file": "partitions/P0001.jsonl",
+      "sample_count": 720
+    },
+    {
+      "partition_id": "P0002",
+      "vehicle_id": "T101",
+      "start_ts": "2026-10-01T01:00:00Z",
+      "end_ts": "2026-10-01T02:00:00Z",
+      "expires_at": "2026-11-01T00:00:00Z",
+      "file": "partitions/P0002.jsonl",
+      "sample_count": 720
+    },
+    {
+      "partition_id": "P0003",
+      "vehicle_id": "T101",
+      "start_ts": "2026-10-01T02:00:00Z",
+      "end_ts": "2026-10-01T03:00:00Z",
+      "expires_at": "2026-12-01T00:00:00Z",
+      "file": "partitions/P0003.jsonl",
+      "sample_count": 720
+    },
+    {
+      "partition_id": "P0004",
+      "vehicle_id": "T102",
+      "start_ts": "2026-10-02T00:00:00Z",
+      "end_ts": "2026-10-02T01:00:00Z",
+      "expires_at": "2026-11-05T00:00:00Z",
+      "file": "partitions/P0004.jsonl",
+      "sample_count": 720
+    },
+    {
+      "partition_id": "P0005",
+      "vehicle_id": "T102",
+      "start_ts": "2026-10-02T01:00:00Z",
+      "end_ts": "2026-10-02T02:00:00Z",
+      "expires_at": "2026-12-20T00:00:00Z",
+      "file": "partitions/P0005.jsonl",
+      "sample_count": 720
+    },
+    {
+      "partition_id": "P0006",
+      "vehicle_id": "T203",
+      "start_ts": "2026-10-03T00:00:00Z",
+      "end_ts": "2026-10-03T01:00:00Z",
+      "expires_at": "2026-11-10T00:00:00Z",
+      "file": "partitions/P0006.jsonl",
+      "sample_count": 720
+    },
+    {
+      "partition_id": "P0007",
+      "vehicle_id": "T203",
+      "start_ts": "2026-10-03T01:00:00Z",
+      "end_ts": "2026-10-03T02:00:00Z",
+      "expires_at": "2027-01-15T00:00:00Z",
+      "file": "partitions/P0007.jsonl",
+      "sample_count": 720
+    },
+    {
+      "partition_id": "P0008",
+      "vehicle_id": "T101",
+      "start_ts": "2026-10-01T03:00:00Z",
+      "end_ts": "2026-10-01T04:00:00Z",
+      "expires_at": "2026-11-02T00:00:00Z",
+      "file": "partitions/P0008.jsonl",
+      "sample_count": 720
+    }
+  ]
+}

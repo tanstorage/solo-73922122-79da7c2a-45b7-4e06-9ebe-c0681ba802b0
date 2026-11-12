@@ -1,0 +1,47 @@
+# 两个 API 进程（api-a / api-b）共享同一个数据卷：
+# SQLite（WAL）负责跨进程串行化“保全”与“删除资格认领”。
+services:
+  api-a:
+    build: .
+    environment:
+      PROCESS_NAME: api-a
+      DATA_DIR: /data
+      # 后台清理周期：首轮在启动 120s 后执行，给 /docs 演示留出保全时间窗；
+      # 手动 POST /cleanup/run 随时立即生效
+      CLEANUP_INTERVAL_SECONDS: "120"
+      DELETE_LEASE_SECONDS: "30"
+      # 演示删除失败路径时可打开（逗号分隔分区号）：
+      # DELETE_FAIL_PARTITIONS: "P0004"
+    volumes:
+      - lake-data:/data
+    ports:
+      - "8001:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+
+  api-b:
+    build: .
+    environment:
+      PROCESS_NAME: api-b
+      DATA_DIR: /data
+      # 后台清理周期：首轮在启动 120s 后执行，给 /docs 演示留出保全时间窗；
+      # 手动 POST /cleanup/run 随时立即生效
+      CLEANUP_INTERVAL_SECONDS: "120"
+      DELETE_LEASE_SECONDS: "30"
+    volumes:
+      - lake-data:/data
+    ports:
+      - "8002:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+
+volumes:
+  lake-data:

@@ -6,7 +6,13 @@ from fastapi import APIRouter, Request
 from .. import config
 from ..cleanup import run_cleanup_once
 from ..db import read_conn
-from ..models import CleanupRunResult, CleanupStatus, DeleteFailure, InFlightDelete
+from ..models import (
+    CleanupInProgress,
+    CleanupRunResult,
+    CleanupStatus,
+    DeleteFailure,
+    InFlightDelete,
+)
 from ..timeutil import ms_to_iso, now_ms
 
 router = APIRouter(prefix="/cleanup", tags=["清理"])
@@ -18,10 +24,13 @@ router = APIRouter(prefix="/cleanup", tags=["清理"])
     summary="立即执行一轮清理（仅处理已到期且无生效保全的分区）",
 )
 async def run_cleanup(request: Request) -> CleanupRunResult:
-    """逐分区认领删除资格并删除文件；与后台循环共用同一把进程内锁。
+    """逐分区认领删除资格并删除文件；与后台循环共用同一个进程内清理闸门。
 
-    删除失败的分区在返回中标记为 failed（索引中为 delete_failed），
-    不会被报告为已回收。
+    - 删除失败的分区在返回中标记为 failed（索引中为 delete_failed），
+      不会被报告为已回收；
+    - 资格在落库前因租约到期被接管的尝试标记为 superseded，既不计成功也不计失败；
+    - 客户端断开/取消请求只放弃等待响应，删除工作继续执行，
+      实际工作结束前同进程的下一轮清理会在闸门处排队等待。
     """
     result = await run_cleanup_once(request.app, "manual")
     return CleanupRunResult(**result)
@@ -80,6 +89,7 @@ def cleanup_status(request: Request) -> CleanupStatus:
         ).fetchone()["n"]
 
     last_run = getattr(request.app.state, "last_cleanup_run", None)
+    gate = request.app.state.cleanup_gate
     return CleanupStatus(
         process=config.OWNER,
         now=ms_to_iso(now),
@@ -90,5 +100,6 @@ def cleanup_status(request: Request) -> CleanupStatus:
         active_preservations=active_pres,
         background_cleanup_enabled=config.BACKGROUND_CLEANUP_ENABLED,
         cleanup_interval_seconds=config.CLEANUP_INTERVAL_SECONDS,
+        in_progress=CleanupInProgress(**gate.snapshot()),
         last_run=CleanupRunResult(**last_run) if last_run else None,
     )

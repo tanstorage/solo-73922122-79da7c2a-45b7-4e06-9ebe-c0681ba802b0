@@ -6,6 +6,8 @@ FastAPI + SQLite（WAL）+ 本地 JSONL 分区的振动数据湖 API。支持：
 - 调查人员按**车号 + 时间闭区间**保全所有重叠分区；任一分区已开始删除或已清理则**整次拒绝**；解除前不得删除；重叠保全**分别生效**；
 - **后台清理**只处理已到期且无生效保全的分区，**逐分区认领删除资格**；清理期间其他分区照常可操作；
 - **两个 API 进程**共享同一 SQLite 与分区目录，保全与删除资格有**确定先后**；删除失败**绝不报已回收**；中断后重启**继续未完成删除**；索引与文件**最终一致**；
+- **任务交接围栏（fence）**：每次认领的 `(owner, attempts, lease)` 不可复用，删除结束的状态回写全部带围栏条件。旧任务在租约到期被接管后，无论迟到的成功还是失败都**无法覆盖**新任务的状态、租约、错误与完成结果，只记 `superseded`，**不计本轮成败**；
+- **取消等待不取消工作**：断开 `/cleanup/run` 请求只放弃响应，删除线程继续执行；同进程下一轮必须等**实际工作结束**才放行，重复取消也不能提前放行；
 - 按车号、时段查询**尚存**的采样时间与值；另有保全与清理状态接口。
 
 ## 快速开始（Docker Compose）
@@ -42,6 +44,33 @@ DELETE_FAIL_PARTITIONS=P0004 docker compose up --build
 # 去掉该环境变量重启后，后台循环自动重试并成功回收。
 ```
 
+### 演示任务交接：慢删除跨租约 + 迟到报错（可控）
+
+```bash
+# 专用 profile：handover-a 对 P0001 慢删除 10s（租约仅 3s）且注入删除失败；
+# handover-b 干净、每轮只认领 1 个分区，租约到期即接管。
+docker compose --profile handover up --build
+./scripts/demo_handover.sh
+```
+
+脚本会展示完整时间线：handover-a 认领 P0001 后进入 10s 慢删除 → 租约 3s 到期 →
+handover-b 接管并回收为 `cleaned` → handover-a 的失败**迟到落库**，被围栏条件
+UPDATE 挡回（`rowcount=0`），其响应中 P0001 标记为 `superseded`（`0 cleaned, 0 failed`），
+P0001 保持 `cleaned` 不被回退为 `delete_failed`。旧代码的缺陷正是这一步会把
+`cleaned` 改回 `delete_failed`。
+
+### 演示取消等待（可控）
+
+```bash
+# 单服务 profile：P0001 慢删除 10s，后台循环关闭
+docker compose --profile cancel-demo up --build
+./scripts/demo_cancel.sh
+```
+
+脚本在慢删除期间断开 `/cleanup/run` 请求并重复发起两次排队请求后取消，
+轮询 `/cleanup/status` 可见 `in_progress` 在整个实际工作窗口内始终为 `true`，
+直到 10s 删除真正结束闸门才放行；随后新一轮可立即执行。
+
 ### 验证重启幂等
 
 ```bash
@@ -58,8 +87,8 @@ docker compose restart api-a
 | POST | `/preservations` | 保全所有重叠分区（原子；409/404 语义见下） |
 | GET | `/preservations` / `/{id}` | 保全列表 / 详情 |
 | POST | `/preservations/{id}/release` | 解除保全（幂等） |
-| POST | `/cleanup/run` | 立即执行一轮清理 |
-| GET | `/cleanup/status` | 清理状态总览 |
+| POST | `/cleanup/run` | 立即执行一轮清理（取消等待不中断删除工作；失效尝试记 `superseded`） |
+| GET | `/cleanup/status` | 清理状态总览（含 `in_progress` 闸门状态、在途删除、失败记录） |
 | GET | `/health`, `/meta/info` | 健康与进程信息 |
 
 **保全拒绝语义**：无重叠分区 → `404`；任一重叠分区为 `deleting` / `delete_failed` / `cleaned` → `409` 整次拒绝（不产生任何保全记录）。
@@ -85,10 +114,28 @@ docker compose restart api-a
 
 ### 崩溃恢复与最终一致
 
-- 认领带**租约**（`DELETE_LEASE_SECONDS`，默认 30s）：持有进程崩溃后，租约到期才允许其他进程接管，避免双删；
+- 认领带**租约**（`DELETE_LEASE_SECONDS`，默认 30s）：持有进程崩溃或删除过慢时，租约到期才允许其他进程接管，避免双删；
+- 每次认领带不可复用的**围栏** `(delete_owner, delete_attempts, delete_lease_ms)`，
+  删除结束的成功/失败回写都是带围栏的条件 `UPDATE`：
+  - 租约内完成 → 正常命中 1 行，置 `cleaned` / `delete_failed`；
+  - 租约到期被新任务接管后旧任务才落库 → 命中 0 行，结果作废并记 `superseded`，
+    新任务的状态、租约、错误与完成结果**绝不会被迟到结果覆盖**（修复点）；
+  - `superseded` 是独立结果类型，既不计本轮 `cleaned` 也不计 `failed`；
 - 删文件是幂等的：文件已不存在视为删除成功（覆盖“文件已删、状态未落库”的崩溃窗口），随后置 `cleaned`；
 - 删除失败置 `delete_failed` 并记录错误，后续 pass 自动重试，**绝不误报已回收**；
 - 每次启动执行 `reconcile`：删除“无索引行或行已 cleaned”的孤儿文件，索引与磁盘最终一致。
+
+### 进程内串行与取消等待
+
+同进程的手动触发与后台循环共用 `CleanupRunGate`（一把覆盖“等待 + 实际工作”
+全生命周期的锁）：
+
+- 物理删除放在工作线程（`run_in_executor`），协程用 `asyncio.shield` 等待；
+  HTTP 客户端断开或任务取消只让外层 `await` 收到 `CancelledError`，**工作线程不中断**；
+- 取消后由守护任务接管收尾，锁在工作线程真正结束后才释放，因此同进程下一轮
+  清理在旧工作完成前只能排队；**重复取消同样不能提前放行**；
+- 迟到结束的 pass 仍写入 `last_cleanup_run`；`/cleanup/status` 的 `in_progress`
+  如实反映是否有删除工作在跑；优雅停机会等在途工作结束。
 
 ### 种子载入
 
@@ -108,11 +155,14 @@ DATA_DIR=./var PROCESS_NAME=b .venv/bin/uvicorn app.main:app --port 8002 &
 ## 测试
 
 ```bash
-python3 tests/e2e_test.py    # 真实拉起双进程，覆盖全部需求语义（7 个场景）
+python3 tests/e2e_test.py        # 真实拉起双进程，覆盖全部基础需求语义（7 个场景，35 项断言）
+python3 tests/handover_test.py   # 围栏交接 + 闸门取消语义（26 项断言，含双进程端到端）
+python3 tests/demo_dry_run.py    # 按 handover profile 环境变量本地干跑演示全流程
 ```
 
-场景：重启幂等 / 崩溃续删 / 删除失败不误报+重试 / 双进程保全-清理竞态（6 轮不变量）/
-reconcile 孤儿文件 / 保全闭区间与原子拒绝与独立生效 / 清理期间可操作性。
+`handover_test.py` 覆盖：围栏条件 UPDATE 挡回迟到成功/失败、`superseded` 不覆盖
+接管者状态；取消等待后工作继续、重复取消不提前放行、实际工作结束才放行下一轮、
+迟到结果仍落库；双进程慢删除跨租约接管与迟到报错端到端。
 
 ## 配置（环境变量）
 
@@ -126,3 +176,5 @@ reconcile 孤儿文件 / 保全闭区间与原子拒绝与独立生效 / 清理�
 | `CLEANUP_MAX_PER_PASS` | `100` | 单轮清理分区上限 |
 | `BACKGROUND_CLEANUP_ENABLED` | `true` | 后台循环开关（手动 `/cleanup/run` 不受影响） |
 | `DELETE_FAIL_PARTITIONS` | 空 | 故障注入：指定分区删除必失败（演示/测试用） |
+| `SLOW_DELETE_PARTITIONS` | 空 | 慢删除注入：指定分区删文件前先睡眠（跨租约接管/取消等待演示用） |
+| `SLOW_DELETE_SECONDS` | `8` | 慢删除注入的睡眠秒数（需大于 `DELETE_LEASE_SECONDS` 才能复现接管） |

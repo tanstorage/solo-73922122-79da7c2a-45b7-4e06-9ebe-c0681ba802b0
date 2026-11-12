@@ -1,9 +1,13 @@
 # 两个 API 进程（api-a / api-b）共享同一个数据卷：
 # SQLite（WAL）负责跨进程串行化“保全”与“删除资格认领”。
+#
+# 默认配置面向常规演示；任务交接相关的可控演示通过 profile 启用：
+#   docker compose --profile handover up --build      # 慢删除跨租约 + 迟到报错
+#   docker compose --profile cancel-demo up --build   # 取消等待（短租约 + 慢删除）
 services:
   api-a:
     build: .
-    environment:
+    environment: &api-env
       PROCESS_NAME: api-a
       DATA_DIR: /data
       # 后台清理周期：首轮在启动 120s 后执行，给 /docs 演示留出保全时间窗；
@@ -12,6 +16,9 @@ services:
       DELETE_LEASE_SECONDS: "30"
       # 演示删除失败路径时可打开（逗号分隔分区号）：
       # DELETE_FAIL_PARTITIONS: "P0004"
+      # 慢删除注入（删文件前睡眠 N 秒），用于跨租约接管/取消等待演示：
+      # SLOW_DELETE_PARTITIONS: "P0001"
+      # SLOW_DELETE_SECONDS: "8"
     volumes:
       - lake-data:/data
     ports:
@@ -28,8 +35,6 @@ services:
     environment:
       PROCESS_NAME: api-b
       DATA_DIR: /data
-      # 后台清理周期：首轮在启动 120s 后执行，给 /docs 演示留出保全时间窗；
-      # 手动 POST /cleanup/run 随时立即生效
       CLEANUP_INTERVAL_SECONDS: "120"
       DELETE_LEASE_SECONDS: "30"
     volumes:
@@ -42,6 +47,84 @@ services:
       timeout: 5s
       retries: 6
       start_period: 5s
+
+  # ------------------------------------------------------------
+  # 任务交接演示拓扑（profile: handover）
+  # api-a 对 P0001 慢删除（10s > 3s 租约）且注入删除失败：
+  #   它在租约到期后仍持有旧围栏；api-b 干净，每轮只认领 1 个分区，
+  #   租约到期即接管并清理；api-a 迟到的失败落库被围栏挡回，
+  #   P0001 保持 cleaned，api-a 响应记 superseded（不计本轮成败）。
+  # 迟到“成功”被挡回的场景由 tests/handover_test.py 的 A1 用例覆盖。
+  handover-a:
+    profiles: ["handover"]
+    build: .
+    environment:
+      PROCESS_NAME: handover-a
+      DATA_DIR: /data
+      BACKGROUND_CLEANUP_ENABLED: "false"
+      DELETE_LEASE_SECONDS: "3"
+      DELETE_RETRY_SECONDS: "2"
+      SLOW_DELETE_PARTITIONS: "P0001"
+      SLOW_DELETE_SECONDS: "10"
+      DELETE_FAIL_PARTITIONS: "P0001"
+    volumes:
+      - lake-data:/data
+    ports:
+      - "8011:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+
+  handover-b:
+    profiles: ["handover"]
+    build: .
+    environment:
+      PROCESS_NAME: handover-b
+      DATA_DIR: /data
+      BACKGROUND_CLEANUP_ENABLED: "false"
+      DELETE_LEASE_SECONDS: "3"
+      DELETE_RETRY_SECONDS: "2"
+      # 每轮只认领 1 个分区：演示脚本高频触发接管，避免 B 的 pass 先处理
+      # 其他到期分区而让 P0001/P0002 的接管排到 A 的慢删除落库之后
+      CLEANUP_MAX_PER_PASS: "1"
+    volumes:
+      - lake-data:/data
+    ports:
+      - "8012:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+
+  # ------------------------------------------------------------
+  # 取消等待演示拓扑（profile: cancel-demo）
+  # 单进程即可：客户端在慢删除期间断开，轮询 /cleanup/status 可见
+  # in_progress 始终为 true，直到实际删除结束才放行下一轮。
+  cancel-demo:
+    profiles: ["cancel-demo"]
+    build: .
+    environment:
+      PROCESS_NAME: cancel-demo
+      DATA_DIR: /data
+      BACKGROUND_CLEANUP_ENABLED: "false"
+      DELETE_LEASE_SECONDS: "30"
+      SLOW_DELETE_PARTITIONS: "P0001"
+      SLOW_DELETE_SECONDS: "10"
+    volumes:
+      - lake-data:/data
+    ports:
+      - "8021:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
 
 volumes:
   lake-data:

@@ -89,7 +89,8 @@ class SamplesResponse(BaseModel):
 
 class DeleteOutcome(BaseModel):
     partition_id: str
-    result: Literal["cleaned", "failed"]
+    # superseded：删除资格在落库前因租约到期被接管，迟到结果作废，不计本轮成败
+    result: Literal["cleaned", "failed", "superseded"]
     detail: str
 
 
@@ -100,6 +101,12 @@ class CleanupRunResult(BaseModel):
     finished_at: str
     outcomes: list[DeleteOutcome]
     message: str
+
+
+class CleanupInProgress(BaseModel):
+    in_progress: bool = Field(description="本进程是否有清理工作仍在运行（取消等待不会中断它）")
+    reason: str | None = None
+    started_at: str | None = None
 
 
 class InFlightDelete(BaseModel):
@@ -125,6 +132,9 @@ class CleanupStatus(BaseModel):
     active_preservations: int
     background_cleanup_enabled: bool
     cleanup_interval_seconds: float
+    in_progress: CleanupInProgress = Field(
+        description="本进程清理闸门状态：工作未结束时，同进程下一轮清理必须等待"
+    )
     last_run: CleanupRunResult | None = Field(
         default=None, description="本进程最近一次清理 pass（另一进程可能另有其记录）"
     )

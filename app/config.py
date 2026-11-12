@@ -36,6 +36,12 @@ BACKGROUND_CLEANUP_ENABLED = _flag("BACKGROUND_CLEANUP_ENABLED", True)
 DELETE_FAIL_PARTITIONS = {
     x.strip() for x in os.environ.get("DELETE_FAIL_PARTITIONS", "").split(",") if x.strip()
 }
+# 慢删除注入：删除这些分区的文件前先睡眠 SLOW_DELETE_SECONDS，
+# 当睡眠时间超过租约时，可复现“慢删除跨租约 -> 其他任务接管 -> 迟到结果作废”
+SLOW_DELETE_PARTITIONS = {
+    x.strip() for x in os.environ.get("SLOW_DELETE_PARTITIONS", "").split(",") if x.strip()
+}
+SLOW_DELETE_SECONDS = float(os.environ.get("SLOW_DELETE_SECONDS", "8"))
 
 PROCESS_NAME = os.environ.get("PROCESS_NAME") or socket.gethostname()
 OWNER = f"{PROCESS_NAME}:{os.getpid()}"
